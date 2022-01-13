@@ -629,7 +629,8 @@ impl<TSpec: EthSpec> PeerDB<TSpec> {
 
         // If the peer was disconnected, reduce the disconnected peer count.
         if info.is_disconnected() {
-            self.disconnected_peers = self.disconnected_peers().count().saturating_sub(1);
+            self.disconnected_peers = self.disconnected_peers.saturating_sub(1);
+            debug!(self.log, "Peer is being dialed"; "count" => self.disconnected_peers, "actual" => self.disconnected_peers().count());
         }
     }
 
@@ -680,6 +681,12 @@ impl<TSpec: EthSpec> PeerDB<TSpec> {
         peer_id: &PeerId,
         new_state: NewConnectionState,
     ) -> Option<BanOperation> {
+        let actual_disconnected_peers = self
+            .peers
+            .iter()
+            .filter(|(_, info)| info.is_disconnected())
+            .count();
+
         let log_ref = &self.log;
         let info = self.peers.entry(*peer_id).or_insert_with(|| {
             // If we are not creating a new connection (or dropping a current inbound connection) log a warning indicating we are updating a
@@ -725,6 +732,7 @@ impl<TSpec: EthSpec> PeerDB<TSpec> {
                 match current_state {
                     PeerConnectionStatus::Disconnected { .. } => {
                         self.disconnected_peers = self.disconnected_peers.saturating_sub(1);
+                        debug!(self.log, "Peer is connected"; "peer_id" => %peer_id, "count" => self.disconnected_peers, "actual" => actual_disconnected_peers -1);
                     }
                     PeerConnectionStatus::Banned { .. } => {
                         error!(self.log, "Accepted a connection from a banned peer"; "peer_id" => %peer_id);
@@ -795,6 +803,7 @@ impl<TSpec: EthSpec> PeerDB<TSpec> {
                         info.set_connection_status(PeerConnectionStatus::Disconnected {
                             since: Instant::now(),
                         });
+                        debug!(self.log, "Peer has been disconnected"; "peer_id" => %peer_id, "count" => self.disconnected_peers, "actual" => self.disconnected_peers().count());
                     }
                 }
             }
@@ -812,6 +821,7 @@ impl<TSpec: EthSpec> PeerDB<TSpec> {
                 // the disconnected_peers counter.
                 self.disconnected_peers = self.disconnected_peers.saturating_sub(1);
                 info.set_connection_status(PeerConnectionStatus::Disconnecting { to_ban });
+                debug!(self.log, "Peer moved to disconnecting state"; "peer_id" => %peer_id, "count" => self.disconnected_peers, "actual" => self.disconnected_peers().count());
             }
             (_, NewConnectionState::Disconnecting { to_ban }) => {
                 // We overwrite all states and set this peer to be disconnecting.
@@ -831,6 +841,9 @@ impl<TSpec: EthSpec> PeerDB<TSpec> {
                 self.banned_peers_count
                     .add_banned_peer(info.seen_ip_addresses());
                 self.disconnected_peers = self.disconnected_peers.saturating_sub(1);
+
+                debug!(self.log, "Peer has been banned"; "peer_id" => %peer_id, "count" => self.disconnected_peers, "actual" => actual_disconnected_peers - 1);
+
                 let known_banned_ips = self.banned_peers_count.banned_ips();
                 let banned_ips = info
                     .seen_ip_addresses()
@@ -899,8 +912,9 @@ impl<TSpec: EthSpec> PeerDB<TSpec> {
                         // Increment the disconnected count and reduce the banned count
                         self.banned_peers_count
                             .remove_banned_peer(info.seen_ip_addresses());
-                        self.disconnected_peers =
-                            self.disconnected_peers().count().saturating_add(1);
+                        self.disconnected_peers = self.disconnected_peers.saturating_add(1);
+
+                        debug!(self.log, "Peer has been unbanned"; "peer_id" => %peer_id, "count" => self.disconnected_peers, "actual" => self.disconnected_peers().count());
                     }
                 }
             }
@@ -987,7 +1001,7 @@ impl<TSpec: EthSpec> PeerDB<TSpec> {
                 .min_by_key(|(_, age)| *age)
                 .map(|(id, _)| *id)
             {
-                debug!(self.log, "Removing old disconnected peer"; "peer_id" => %to_drop, "disconnected_size" => self.disconnected_peers.saturating_sub(1));
+                debug!(self.log, "Removing old disconnected peer"; "peer_id" => %to_drop, "disconnected_size" => self.disconnected_peers.saturating_sub(1), "actual" => self.disconnected_peers().count() - 1);
                 self.peers.remove(&to_drop);
             }
             // If there is no minimum, this is a coding error. For safety we decrease
